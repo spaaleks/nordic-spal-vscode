@@ -1,0 +1,20 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { parseJsonc, parsePalette, recolor, merge } = require('../lib/theme');
+
+const root = path.join(__dirname, '..');
+const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+const write = (file, theme) => {
+    fs.writeFileSync(path.join(root, file), JSON.stringify(theme, null, 4) + '\n');
+    console.log(`built ${file}`);
+};
+
+const theme = merge(parseJsonc(read('src/base.json')), parseJsonc(read('src/overrides.json')), 'Nordic Spal');
+const red = recolor(theme, parsePalette(read('palette/reference.toml')), parsePalette(read('palette/reference-red.toml')));
+const redOverrides = parseJsonc(read('src/overrides-red.json'));
+
+write('themes/nordic-spal.json', theme);
+write('themes/nordic-spal-red.json', { ...red, name: 'Nordic Spal Red', colors: { ...red.colors, ...redOverrides.colors } });

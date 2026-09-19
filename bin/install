@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Must stay bash 3.2 compatible for macOS.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+NAME="$(sed -n 's/^    "name": "\(.*\)",$/\1/p' "$ROOT/package.json")"
+PUBLISHER="$(sed -n 's/^    "publisher": "\(.*\)",$/\1/p' "$ROOT/package.json")"
+VERSION="$(sed -n 's/^    "version": "\(.*\)",$/\1/p' "$ROOT/package.json")"
+VSIX="$ROOT/dist/$NAME-$VERSION.vsix"
+
+if command -v node >/dev/null 2>&1; then
+  node "$ROOT/bin/build"
+fi
+
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+
+mkdir -p "$STAGE/extension/themes" "$ROOT/dist"
+cp -R "$ROOT/package.json" "$ROOT/extension.js" "$ROOT/README.md" "$ROOT/lib" "$ROOT/palette" "$STAGE/extension/"
+for variant in nordic-spal nordic-spal-red; do
+  cp "$ROOT/themes/$variant.json" "$STAGE/extension/themes/"
+  cp "$ROOT/themes/$variant.json" "$STAGE/extension/themes/$variant-color-theme.json"
+done
+
+cat >"$STAGE/extension.vsixmanifest" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="$NAME" Version="$VERSION" Publisher="$PUBLISHER"/>
+    <DisplayName>Nordic Spal</DisplayName>
+    <Description xml:space="preserve">My VS Code theme, gold and red, following the Omarchy palette where Omarchy runs</Description>
+    <Categories>Themes</Categories>
+    <Properties>
+      <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.70.0"/>
+      <Property Id="Microsoft.VisualStudio.Code.ExtensionKind" Value="ui"/>
+    </Properties>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code"/>
+  </Installation>
+  <Dependencies/>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true"/>
+  </Assets>
+</PackageManifest>
+EOF
+
+cat >"$STAGE/[Content_Types].xml" <<'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".json" ContentType="application/json"/><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".md" ContentType="text/markdown"/><Default Extension=".toml" ContentType="text/plain"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>
+EOF
+
+rm -f "$VSIX"
+(cd "$STAGE" && zip -qr "$VSIX" '[Content_Types].xml' extension.vsixmanifest extension)
+echo "packaged ${VSIX#"$ROOT/"}"
+
+# Stops omarchy-theme-set-vscode writing workbench.colorTheme, which Settings Sync spreads.
+EDITORS="code:skip-vscode-theme-changes
+code-insiders:skip-vscode-insiders-theme-changes
+codium:skip-codium-theme-changes
+cursor:skip-cursor-theme-changes"
+
+MAC_CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+installed=0
+
+while IFS=: read -r cli toggle; do
+  bin="$(command -v "$cli" 2>/dev/null || true)"
+  if [[ -z $bin && $cli == code && -x $MAC_CODE ]]; then
+    bin="$MAC_CODE"
+  fi
+  [[ -n $bin ]] || continue
+
+  "$bin" --install-extension "$VSIX" --force
+  installed=$((installed + 1))
+
+  if command -v omarchy-toggle >/dev/null 2>&1; then
+    omarchy-toggle "$toggle" on
+    echo "omarchy: $toggle on (Omarchy no longer rewrites workbench.colorTheme for $cli)"
+  fi
+done <<<"$EDITORS"
+
+if ((installed == 0)); then
+  echo "No VS Code CLI found. Install $VSIX by hand: Extensions view > ... > Install from VSIX." >&2
+  exit 1
+fi
+
+cat <<EOF
+
+Installed $PUBLISHER.$NAME $VERSION. Reload open windows (Developer: Reload Window).
+Select it once with "workbench.colorTheme": "Nordic Spal" (or "Nordic Spal Red"); Settings Sync carries that to other hosts.
+EOF
